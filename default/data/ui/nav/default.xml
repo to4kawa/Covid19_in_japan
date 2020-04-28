@@ -1,0 +1,5 @@
+<nav search_view="search">
+  <view name="covid19_in_japan" default='true' /> 
+  <view name="search" />
+  <view name="dashboards" />
+</nav>

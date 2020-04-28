@@ -1,0 +1,179 @@
+<dashboard theme="dark">
+  <label>COVID-19 in Japan</label>
+  <search id="base">
+    <query>sourcetype=toyo_json
+| head 1</query>
+    <earliest>0</earliest>
+    <latest></latest>
+  </search>
+  <search base="base" id="base1">
+    <query>
+| rex "prefectures-data.*?(?&lt;data&gt;{.*?})"
+| rex field=data "carriers.*?\[(?&lt;carriers&gt;\[.*?\])\]"
+| rex max_match=0 field=carriers "(?&lt;daily&gt;\[[^\[\]]+\])"
+| spath prefectures-map{} output=prefectures_map
+| stats count list(prefectures_map) as pref by daily
+| eval date=mvindex(split(trim(daily,"[]"),","),0,2) , data=mvindex(split(trim(daily,"[]"),","),3,-1)
+| eval _time=strptime(mvjoin(date,""),"%Y%m%d")
+| mvexpand data
+| table _time data count pref
+| streamstats count  
+| eval count = nullif(count % 47,0) | fillnull count value=47
+| eval data=trim(data) ,pref=mvindex(pref,count-1)
+| spath input=pref
+| eval ja=code."_".ja
+| table _time ja data
+| sort 0 - _time data
+| xyseries _time ja data
+| rename COMMENT as "ここでいったん県名のフィールドで作成している。ここから北海道からの順番に並び替えている"
+</query>
+  </search>
+  <row>
+    <panel>
+      <html>このダッシュボードは東洋経済オンライン(<a href="https://toyokeizai.net/sp/visual/tko/covid19/">https://toyokeizai.net/sp/visual/tko/covid19/</a>)のデータを利用しています。</html>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>最終更新日: $lastUpdate$</title>
+      <single>
+        <title>感染者数</title>
+        <search base="base1" id="base2">
+          <query>
+| transpose 0 header_field=_time column_name=pref
+| sort pref
+| eval pref = mvindex(split(pref,"_"),1)
+| transpose 0 header_field=pref column_name=_time
+| rename COMMENT as "ここで時間+県名の表" 
+| addtotals
+| eventstats max(_time) as time
+| eval time=strftime(time,"%F")
+| fields _time Total time</query>
+          <done>
+            <set token="lastUpdate">$result.time$</set>
+          </done>
+        </search>
+        <option name="drilldown">none</option>
+      </single>
+      <table>
+        <title>感染者数増加率</title>
+        <search base="base1">
+          <query>| transpose 0 header_field=_time column_name=pref
+| sort pref
+| eval pref = mvindex(split(pref,"_"),1)
+| rename COMMENT as "ここまでが県名と日次累計データの作成、ここでやっとNHKのクエリーが使える"
+| rename pref as _pref
+| transpose 0 header_field=_pref column_name=_time
+| sort _time
+| tail 2
+| reverse
+| eval _time=strftime(_time,"%F")
+| transpose 0 header_field=_time column_name=_pref
+| foreach * [eval tmp=mvappend(tmp,'&lt;&lt;FIELD&gt;&gt;'), first = max(tmp) , second = min(tmp)
+| eval daily_incr = if(isnull(nullif(second,0)), round(first * 100.00,2), round((first -second) / second * 100,2))]
+| eval daily_count = first - second
+| sort - daily_incr
+| fields - first second tmp
+| rename _pref as "都道府県", daily_incr as "増加率", daily_count as "日次感染者数"
+| table 都道府県 * 日次感染者数 増加率</query>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="refresh.display">progressbar</option>
+        <format type="number" field="増加率">
+          <option name="unit">%</option>
+        </format>
+      </table>
+    </panel>
+    <panel>
+      <map>
+        <search>
+          <query>sourcetype=toyo_json
+| head 1
+| spath prefectures-map{} output=prefectures_map
+| stats count by prefectures_map
+| spath input=prefectures_map
+| table code ja en value
+| sort - value
+| geom japansimple featureIdField=en
+| fields - code ja</query>
+          <earliest>0</earliest>
+          <latest></latest>
+          <sampleRatio>1</sampleRatio>
+        </search>
+        <option name="drilldown">none</option>
+        <option name="height">600</option>
+        <option name="mapping.choroplethLayer.colorMode">categorical</option>
+        <option name="mapping.map.center">(38.62,137.55)</option>
+        <option name="mapping.map.zoom">5</option>
+        <option name="mapping.type">choropleth</option>
+      </map>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <chart>
+        <title>日次感染率</title>
+        <search base="base2">
+          <query>
+| streamstats count(_time) as days
+| fields _time Total days
+| rename "Total" as "Total Cases" 
+| eval "Overall Infection Rate"='Total Cases'/days
+| eventstats max("Overall Infection Rate") as "Maximum Infection Rate"
+| rename "Total Cases" as "TotalCases"
+| streamstats current=f window=2 last(TotalCases) as last 
+| eval perc_incr=((TotalCases-last)/last)*100 
+| rename TotalCases as "Total Cases", perc_incr as "Daily Infection Rate" 
+| fields - last 
+| fields _time "Total Cases"  "Daily Infection Rate"</query>
+        </search>
+        <option name="charting.axisY2.enabled">1</option>
+        <option name="charting.chart">area</option>
+        <option name="charting.chart.overlayFields">"Total Cases"</option>
+        <option name="charting.drilldown">none</option>
+        <option name="charting.legend.placement">bottom</option>
+        <option name="height">600</option>
+      </chart>
+    </panel>
+    <panel>
+      <chart>
+        <title>感染者数上位１０都道府県日次感染者数 ※2020/3/11以前は3/11の数で補間</title>
+        <search base="base1">
+          <query>| transpose 0 header_field=_time column_name=pref
+| sort pref
+| eval pref = mvindex(split(pref,"_"),1)
+| rename COMMENT as "ここまでが県名と日次累計データの作成、ここでやっとNHKのクエリーが使える"
+| rename pref as _pref
+| foreach * [eval Check=max('&lt;&lt;FIELD&gt;&gt;')]
+| sort 10 - Check
+| fields - Check
+| transpose 0 header_field=_pref column_name=_time
+| rename COMMENT as "最初の感染者が出た日からにしている。"
+| append [|makeresults
+| eval _time = strptime("2020-01-16","%F")]
+| makecontinuous _time span=1d
+| reverse
+| streamstats count(eval(isnull('東京都'))) as _count
+| filldown
+| foreach * [eval &lt;&lt;FIELD&gt;&gt; = if(_count=0,'&lt;&lt;FIELD&gt;&gt;', round('&lt;&lt;FIELD&gt;&gt;' / _count))]
+| reverse
+| rename COMMENT as "空白は最初の値、2020/3/11の値からの計算値で埋めている。"
+| untable _time pref count
+| sort _time
+| streamstats count as days by pref
+| streamstats current=f max(count) as prev by pref
+| eval daily_count = count - prev
+| table pref days count daily_count
+| sort 0 - count</query>
+        </search>
+        <option name="charting.chart">bubble</option>
+        <option name="charting.chart.bubbleMaximumSize">30</option>
+        <option name="charting.chart.bubbleMinimumSize">5</option>
+        <option name="charting.drilldown">none</option>
+        <option name="charting.legend.placement">bottom</option>
+        <option name="height">600</option>
+        <option name="refresh.display">progressbar</option>
+      </chart>
+    </panel>
+  </row>
+</dashboard>
