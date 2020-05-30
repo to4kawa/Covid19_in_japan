@@ -12,19 +12,21 @@
 | rex field=data "carriers.*?\[(?&lt;carriers&gt;\[.*?\])\]"
 | rex max_match=0 field=carriers "(?&lt;daily&gt;\[[^\[\]]+\])"
 | spath prefectures-map{} output=prefectures_map
-| stats count list(prefectures_map) as pref by daily
-| eval date=mvindex(split(trim(daily,"[]"),","),0,2) , data=mvindex(split(trim(daily,"[]"),","),3,-1)
-| eval _time=strptime(mvjoin(date,""),"%Y%m%d")
-| mvexpand data
-| table _time data count pref
-| streamstats count  
-| eval count = nullif(count % 47,0) | fillnull count value=47
-| eval data=trim(data) ,pref=mvindex(pref,count-1)
-| spath input=pref
+| eval sorter=mvrange(0,mvcount(daily))
+| eval daily=mvzip(sorter,daily)
+| stats list(prefectures_map) as prefectures_map by daily
+| mvexpand prefectures_map
+| spath input=prefectures_map
+| table daily code ja
 | eval ja=code."_".ja
-| table _time ja data
-| sort 0 - _time data
-| xyseries _time ja data
+| xyseries daily ja code
+| foreach *_* [ eval &lt;&lt;FIELD&gt;&gt; = mvindex(split(daily,","),'&lt;&lt;FIELD&gt;&gt;')]
+| untable daily pref count
+| eval daily=mvindex(split(daily,","),0)
+| sort daily pref
+| eval _time = if(daily=0,strptime("2020-03-11","%F"),relative_time(strptime("2020-03-11","%F"),("+".daily."d@d")))
+| rex field=count "(?&lt;count&gt;\d+)"
+| xyseries _time pref count
 | rename COMMENT as "ここでいったん県名のフィールドで作成している。ここから北海道からの順番に並び替えている"
 </query>
   </search>
